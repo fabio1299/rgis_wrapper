@@ -8,7 +8,6 @@
 import time
 import rgis as rg
 import argparse
-from argparse import RawTextHelpFormatter
 import random
 
 
@@ -19,7 +18,7 @@ print_if_flag=True
 # to run the routine
 
 parser = argparse.ArgumentParser(description='Tests reading of GDBC files into python',
-                                 formatter_class=RawTextHelpFormatter)
+                                 formatter_class=argparse.RawTextHelpFormatter)
 
 parser.add_argument('-i', '--input',
                     dest='Grid',
