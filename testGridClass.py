@@ -68,13 +68,16 @@ rgGrid = rg.grid(args.Grid,args.timeseries)
 # Now we can load the data from gdbc file
 rgGrid.Load()
 
-print_if("--- %s minutes for READ---" % ((time.time() - start_time) / 60))
+print("--- %s minutes for READ---" % ((time.time() - start_time) / 60))
 
-print_if('Number of rows {}, cols {}, layers {} and bytes {}'.format(rgGrid.nRows,rgGrid.nCols,rgGrid.nLayers,rgGrid.nByte))
+print('Number of rows {}, cols {}, layers {} and bytes {}'.format(rgGrid.nRows,rgGrid.nCols,rgGrid.nLayers,rgGrid.nByte))
 
-print_if('LLx {}, LLy {}, URx {} URy {}'.format(rgGrid.LLx,rgGrid.LLy,rgGrid.URx,rgGrid.URy))
+print('LLx {}, LLy {}, URx {} URy {}'.format(rgGrid.LLx,rgGrid.LLy,rgGrid.URx,rgGrid.URy))
 
-print_if('Grid data shape {}'.format(rgGrid.Data.shape))
+print('Grid data shape {}'.format(rgGrid.Data.shape))
+
+print('Grid view as an Xarray')
+print(rgGrid.Xarray())
 
 
 # Change the option below to add a layer to the dataset (can save to the GDBC file)
@@ -95,11 +98,8 @@ if AddLayer > 0:
     for i in range(CurLayers, rgGrid.nLayers):
         rgGrid.Data[i, :, :] = random.randint(0, 10)
 
-    print_if('Saving file {}'.format(args.OutFile))
-    rgGrid.SaveAs(args.OutFile,rgGrid.Name,'Out title',True,'Month', rgGrid.Year , 1)
-else:
-    # We just save the input GDBC file to the output file
-    print_if('Saving file {}'.format(args.OutFile))
-    rgGrid.SaveAs(args.OutFile, rgGrid.Name, 'Out title', True, 'Month', rgGrid.Year, 1)
+# And finally we save the data to the output GDBC file
+print_if('Saving file {}'.format(args.OutFile))
+rgGrid.SaveAs(args.OutFile, rgGrid.Name, 'Out title', True, 'Month', rgGrid.Year, 1)
 
 print_if("-- %s minutes --" % ((time.time() - start_time) / 60))

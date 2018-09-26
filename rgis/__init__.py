@@ -180,7 +180,6 @@ def _LoadDBCells(inFile):
 
     return pd.read_csv(data1, sep='\t')
 
-
 ####################################################
 ####################################################
 
@@ -341,25 +340,13 @@ class grid():
             cmd = Dir2Ghaas + '/bin/rgis2ds '
         else:
             cmd = Dir2Ghaas + '/bin/rgis2ds -m ' + template
-            # data=bytearray()
         dataparts = []
         proc = sp.Popen(cmd + self.Name, stdout=sp.PIPE, shell=True)
-        # data=bytearray(proc.stdout.read())
-        self.Data = np.zeros((self.nLayers, self.nRows, self.nCols), dtype=self.npType)
-        """
-        for i in range(0,self.nLayers):
-            bstart=(40 + perLayer)*i+39
-            bend=bstart + perLayer
-            self.Data[i,:,:]=np.frombuffer(data[bstart:bend], dtype=self.npType).reshape(self.nRows,self.nCols)
-        dump40 = MFdsHeader()
-        dump40 = data[0:39]
-        """
+
         for i in range(0, self.nLayers):
             dump40 = MFdsHeader()
             proc.stdout.readinto(dump40)
             self.Type = dump40.Type
-            # data=data+bytearray(proc.stdout.read(perLayer))
-            # data.extend(bytearray(proc.stdout.read(perLayer)))
             dataparts.append(bytearray(proc.stdout.read(perLayer)))
         data = b"".join(dataparts)
 
