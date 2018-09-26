@@ -76,7 +76,6 @@ print('Grid view as an Xarray')
 # ref https://pypi.org/project/xarray/
 print(rgGrid.Xarray())
 
-
 # Change the option below to add a layer to the dataset (can save to the GDBC file)
 AddLayer=2
 
