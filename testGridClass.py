@@ -45,7 +45,7 @@ parser.add_argument('-V', '--verbose',
 parser.add_argument('-T', '--timeseries',
                     action='store_true',
                     help=    "Define if Grid is timeseries",
-                    default=True)
+                    default=False)
 
 args = parser.parse_args()
 
@@ -76,10 +76,12 @@ print_if('LLx {}, LLy {}, URx {} URy {}'.format(rgGrid.LLx,rgGrid.LLy,rgGrid.URx
 
 print_if('Grid data shape {}'.format(rgGrid.Data.shape))
 
+
 # Change the option below to add a layer to the dataset (can save to the GDBC file)
-AddLayer=1
+AddLayer=2
 
 if AddLayer > 0:
+    # We Add layers to the dataset before saving it
     CurLayers=rgGrid.nLayers
     print_if('Adding {} layers'.format(AddLayer))
     NewNames=[]
@@ -95,5 +97,9 @@ if AddLayer > 0:
 
     print_if('Saving file {}'.format(args.OutFile))
     rgGrid.SaveAs(args.OutFile,rgGrid.Name,'Out title',True,'Month', rgGrid.Year , 1)
+else:
+    # We just save the input GDBC file to the output file
+    print_if('Saving file {}'.format(args.OutFile))
+    rgGrid.SaveAs(args.OutFile, rgGrid.Name, 'Out title', True, 'Month', rgGrid.Year, 1)
 
 print_if("-- %s minutes --" % ((time.time() - start_time) / 60))

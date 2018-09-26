@@ -344,7 +344,7 @@ class grid():
             # data=bytearray()
         dataparts = []
         proc = sp.Popen(cmd + self.Name, stdout=sp.PIPE, shell=True)
-        data = bytearray(proc.stdout.read())
+        # data=bytearray(proc.stdout.read())
         self.Data = np.zeros((self.nLayers, self.nRows, self.nCols), dtype=self.npType)
         """
         for i in range(0,self.nLayers):
@@ -367,10 +367,10 @@ class grid():
             self.NoData = dump40.Missing.Float
         else:
             self.NoData = dump40.Missing.Int
-        """
+
         self.Data = np.frombuffer(data, dtype=self.npType)
         self.Data.setflags(write=1)
-        """
+
         if dump40.Type > 6:
             self.Data[self.Data == self.NoData] = np.nan
         else:
