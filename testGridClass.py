@@ -12,11 +12,6 @@ from argparse import RawTextHelpFormatter
 import random
 
 
-# The following is a small routine that can help with debugging
-def print_if(value):
-    if print_if_flag:
-        print(value)
-
 # For debug purposes, set to True
 print_if_flag=True
 
@@ -53,7 +48,7 @@ args = parser.parse_args()
 print_if_flag=args.print_if_flag
 
 
-print_if(args)
+print(args)
 
 # Save the start time to monitor how much time it takes...
 start_time = time.time()
@@ -77,6 +72,8 @@ print('LLx {}, LLy {}, URx {} URy {}'.format(rgGrid.LLx,rgGrid.LLy,rgGrid.URx,rg
 print('Grid data shape {}'.format(rgGrid.Data.shape))
 
 print('Grid view as an Xarray')
+# Access the data as an Xarray
+# ref https://pypi.org/project/xarray/
 print(rgGrid.Xarray())
 
 
@@ -86,7 +83,7 @@ AddLayer=2
 if AddLayer > 0:
     # We Add layers to the dataset before saving it
     CurLayers=rgGrid.nLayers
-    print_if('Adding {} layers'.format(AddLayer))
+    print('Adding {} layers'.format(AddLayer))
     NewNames=[]
     for i in range(0,AddLayer):
         NewNames.append(str(i+1))
@@ -99,7 +96,7 @@ if AddLayer > 0:
         rgGrid.Data[i, :, :] = random.randint(0, 10)
 
 # And finally we save the data to the output GDBC file
-print_if('Saving file {}'.format(args.OutFile))
+print('Saving file {}'.format(args.OutFile))
 rgGrid.SaveAs(args.OutFile, rgGrid.Name, 'Out title', True, 'Month', rgGrid.Year, 1)
 
-print_if("-- %s minutes --" % ((time.time() - start_time) / 60))
+print("-- %s minutes --" % ((time.time() - start_time) / 60))
