@@ -1,19 +1,30 @@
 """
-Handles the inteface between Python and the rgis framework
-The goal is to expose the directory structure of the rgis
+Handles the inteface between Python and the rgis_package framework
+The goal is to expose the directory structure of the rgis_package
 framework to Python to allow easy access to the RGISarchives
 and the results of the WBM model runs
+
+Requires:
+rgis_package to be installed on the system (https://github.com/bmfekete/RGIS)
+
 Contains:
+
 class grid()
-Loads a rgis grid file into a numpy multidimensional array
+Loads a rgis_package grid file into a numpy multidimensional array and
+an XArray data structure
+
 class wbm()
 Reads the WBM script and loads the configuration variables,
 which define the output variables produced and the directory
 structure of the WBM results.
+
 function RGISfunction()
 It exposes the functions of the RGISfunctions.sh script.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!!!!!! The following section kept for historical reference !!!!!!!
 !!!!!!!!!!!!!!!!!!!!!!!!!! NO LONGER NEEDED  !!!!!!!!!!!!!!!!!!!!!!!!!!
+! RGISfunctions.sh now exposes the functions even without sourcing it !
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 To access the RGISfunctions.sh script it used to require a a small
 wrapper script named RGISpython.sh to be placed in the same
 folder as the RGISfunctions.sh
@@ -45,17 +56,38 @@ ${FUNCTION} ${ARGUMENTS}
 !!!!!!!!!!!!!!!!! END OF THE PART NO LONGER NEEDED !!!!!!!!!!!!!!!!!!!!
 """
 
+# Various import statements, commets added where needed...
+
+# ray is used for parallel processing with shared memory
+# this code is stuck with an early version of the library
+# plus it's likely an overkill...
+#import ray
+
+import time
 from ctypes import *
 from copy import deepcopy
 import sys
 import gzip
 import struct
+# Subprocess is used to spwan the call to the respective RGIS commands
 import subprocess as sp
 import os
 import numpy as np
 import pandas as pd
 import random
 import xarray as xr
+import psutil
+#import pickle
+#import multiprocessing as mp # import Process,Pool,Manager,Queue
+#from .pickle2reducer import Pickle2Reducer
+#from pathos.multiprocessing import ProcessingPool as Pool
+#import dill
+#import threading
+
+#ctx = mp.get_context()
+#ctx.reducer = Pickle2Reducer()
+
+#dill.settings['protocol'] = 4
 
 if sys.version_info[0] < 3:
     from StringIO import StringIO
@@ -67,11 +99,12 @@ if 'GHAASDIR' in os.environ:
 else:
     Dir2Ghaas = '/usr/local/share/ghaas'
 
+# The following are two data structures converted from the RGIS C code,
+# and are used to parse the GDBC file header
 
 class MFmissing(Union):
     _fields_ = [("Int", c_int),
                 ("Float", c_double)]
-
 
 class MFdsHeader(Structure):
     _fields_ = [("Swap", c_short),
@@ -79,6 +112,21 @@ class MFdsHeader(Structure):
                 ("ItemNum", c_int),
                 ("Missing", MFmissing),
                 ("Date", c_char * 24)]
+
+# This is translation of the GDBC data type codes into standard
+# Numpy type codes
+def _npType(nType):
+    # nType values: 5=short,6=long,7=float,8=double
+    if nType == 5:
+        return np.int16
+    elif nType == 6:
+        return np.int32
+    elif nType == 7:
+        return np.float32
+    elif nType ==  8:
+        return np.float64
+    else:
+        raise Exception('Unknown value format: type {}'.format(nType))
 
 
 ####################################################
@@ -107,10 +155,10 @@ def _FindFile(Name):
 
 ####################################################
 
-def _LoadDBLayers(inFile, TimeSeriesFlag):
+def _ReadDBLayers(inFile, TimeSeriesFlag):
     # Loads the DBLayers table of the RiverGIS file. This table can be
-    # loaded into a pandas DataFrame and the parameters are used to read the rest
-    # of the file
+    # loaded into a pandas DataFrame and the parameters are used to read
+    # the rest of the file
     cmd = [Dir2Ghaas + '/bin/rgis2table', '-a', 'DBLayers', inFile]
     proc = sp.Popen(cmd, stdout=sp.PIPE)  # , shell=True) +inFile
     data1 = StringIO(bytearray(proc.stdout.read()).decode("utf-8"))
@@ -146,7 +194,7 @@ def _LoadDBLayers(inFile, TimeSeriesFlag):
 
 ####################################################
 
-def _LoadDBItems(inFile):  # ,TimeSeriesFlag):
+def _ReadDBItems(inFile):  # ,TimeSeriesFlag):
     # Loads the DBLayers table of the RiverGIS file. This table can be
     # loaded into a pandas DataFrame and the parameters are used to read the rest
     # of the file
@@ -171,14 +219,189 @@ def _LoadDBItems(inFile):  # ,TimeSeriesFlag):
 
 ####################################################
 
+def _ReadRawData(Name, template):
+    # Loads a grid data from the DataStream into a array
+    # cmd = [Dir2Ghaas + '/bin/rgis2ds']
+    if template is None:
+        cmd = [Dir2Ghaas + '/bin/rgis2ds']
+    else:
+        cmd = [Dir2Ghaas + '/bin/rgis2ds', '-m ', template]
+    cmd.append(Name)
+
+    proc = sp.Popen(cmd, stdout=sp.PIPE)
+    RawData = proc.stdout.read()  # (perLayer*self.nLayers+40*self.nLayers)
+
+    return RawData
+
+###################################################
+
 def _LoadDBCells(inFile):
-    # Loads a network DBCells table into a Pandas DAtaFrame
+    # Loads a network DBCells table into a Pandas DataFrame
     cmd = Dir2Ghaas + '/bin/rgis2table -a DBCells '
     proc = sp.Popen(cmd + inFile, stdout=sp.PIPE, shell=True)
 
     data1 = StringIO(bytearray(proc.stdout.read()).decode("utf-8"))
 
     return pd.read_csv(data1, sep='\t')
+
+####################################################
+
+def runInParallel(*fns):
+    proc = []
+    #manager = mp.Manager()
+    #return_dict = manager.dict()
+    for fn in fns:
+        p = mp.Process(target=fn) # ,args=return_dict)
+        p.start()
+        proc.append(p)
+    for p in proc:
+        p.join()
+
+#@ray.remote
+def _LoadData_m(name,template,verbose=False):
+    data, type, nodata, nptype, dummy = _LoadData(name,template,verbose=verbose)
+    #ray.put(data, type, nodata, nptype)
+    return [data, type, nodata, nptype]
+#@ray.remote
+def _LoadDBLayers_m(name,timeseries,verbose=False):
+    layers, year,dummy = _LoadDBLayers(name,timeseries,verbose=verbose)
+    #ray.put(layers, year)
+    return [layers, year]
+#@ray.remote
+def _LoadGeo_m(name,compressed,verbose=False):
+    llx,lly,metadata,dummy= _LoadGeo(name,compressed,verbose=verbose)
+    #ray.put(llx,lly,metadata)
+    return [llx,lly,metadata]
+#@ray.remote
+def _LoadDBItems_m(name,verbose=False):
+    items,dummy=_LoadDBItems(name,verbose=verbose)
+    #ray.put(items)
+    return [items]
+
+def _LoadDBLayers(name,timeseries,verbose=False): #, q): #,pippo,return_dict):
+    if verbose:
+        print('Started _LoadDBLayers')
+        start_time = time.time()
+    #return_dict['Layers'], return_dict['Year'] = _ReadDBLayers(self.Name, self.TimeSeries)
+    Layers, Year = _ReadDBLayers(name, timeseries)
+    #self.Layers, self.Year = _ReadDBLayers(self.Name, self.TimeSeries)
+
+    #if q is not None:
+    #    print("Loading queue in _LoadDBLayers")
+    #    q.put([self.Layers, self.Year])
+
+    if verbose:
+        print('Finished _LoadDBLayers in {} minutes'.format((time.time() - start_time) / 60))
+    return Layers, Year,'Layers'
+
+def _LoadDBItems(name,verbose=False): #, q): #,pippo,return_dict):
+    if verbose:
+        print('Started _LoadDBItems')
+        start_time = time.time()
+    #return_dict['Layers'], return_dict['Year'] = _ReadDBLayers(self.Name, self.TimeSeries)
+    Items = _ReadDBItems(name)
+    #self.Layers, self.Year = _ReadDBLayers(self.Name, self.TimeSeries)
+    #if q is not None:
+    #    print("Loading queue in _LoadDBItems")
+    #    q.put([self.Items])
+    if verbose:
+        print('Finished _LoadDBItems in {} minutes'.format((time.time() - start_time) / 60))
+    return Items,'Items'
+
+def _LoadData(name,template,verbose=False): # q, template=''):
+
+    if verbose:
+        print('Started _LoadData')
+        start_time = time.time()
+
+    RawData=_ReadRawData(name, template)
+
+    if verbose:
+        print("--- %s minutes for actual pipe transfer ---" % ((time.time() - start_time) / 60))
+
+    #q.put = ([self.RawData])
+
+    dump40 = MFdsHeader.from_buffer_copy(RawData[0:40])
+    Type = dump40.Type
+    # Type values 5:short,6:long,7:float,8:double
+    if Type > 6:
+        NoData = dump40.Missing.Float
+    else:
+        NoData = dump40.Missing.Int
+
+    npType = _npType(Type)
+
+    Data1 = np.frombuffer(RawData, dtype=npType)
+    Data = np.copy(Data1)
+    #self.Data.reshape([-1, 1])
+
+    #print(type(self.Data),self.npType,self.NoData)
+    #print(len(self.Data))
+
+    #if q is not None:
+    #    print("Loading queue in _LoadData")
+    #    ttt=len(self.Data)-1
+    #    q.put([self.Data[0:10000], self.Type, self.NoData])
+    if verbose:
+        print('Finished _LoadData in {} minutes'.format((time.time() - start_time) / 60))
+    return Data, Type, NoData, npType, 'Data'
+
+    #return_dict['RawData'] = data
+
+
+    """
+    for i in range(0, self.nLayers):
+        dump40 = MFdsHeader()
+        proc.stdout.readinto(dump40)
+        self.Type = dump40.Type
+        dataparts.append(bytearray(proc.stdout.read(perLayer)))
+    data = b"".join(dataparts)
+    """
+
+def _LoadGeo(name,compressed,verbose=False): #, q):
+    if verbose:
+        print('Started _LoadGeo')
+        start_time = time.time()
+    if compressed:
+        ifile=gzip.open(name, "rb") # as ifile
+    else:
+        ifile=open(name, "rb")  # as ifile:
+    ifile.seek(40)
+    LLx = struct.unpack('d', ifile.read(8))[0]
+    LLy = struct.unpack('d', ifile.read(8))[0]
+    ifile.read(8)
+    titleLen = struct.unpack('h', ifile.read(2))[0]
+    title = ifile.read(titleLen).decode()
+    MetaData={"title":title}
+    ifile.read(9)
+    docLen = struct.unpack('h', ifile.read(2))[0]
+    docRec = ifile.read(docLen).decode()
+    ifile.read(25)
+    readMore=True
+    while readMore:
+        infoLen=struct.unpack('h', ifile.read(2))[0]
+        infoRec=ifile.read(infoLen).decode()
+        if infoRec=="Data Records":
+            readMore=False
+            break
+        ifile.read(1)
+        valLen=struct.unpack('h', ifile.read(2))[0]
+        if valLen == 44:
+            ifile.read(26)
+        elif valLen == 48:
+            ifile.read(30)
+        valLen=struct.unpack('h', ifile.read(2))[0]
+        valRec=ifile.read(valLen).decode()
+        MetaData[infoRec.lower()]=valRec
+        ifile.read(1)
+
+    #if q is not None:
+    #    print("Loading queue in _LoadGeo")
+    #    q.put([self.LLx,self.LLy,self.MetaData])
+    if verbose:
+        print(f'Finished _LoadGeo in {(time.time() - start_time) / 60} minutes')
+    return LLx,LLy,MetaData,'Geo'
+
 
 ####################################################
 ####################################################
@@ -191,10 +414,11 @@ class grid():
             Data:     the list of variables generated by the WBM run
     """
 
-    def __init__(self, Name=None, TimeSeries=False):
+    def __init__(self, Name=None, TimeSeries=False, verbose=False):
         """
             Initializes the class and sets the GHAASDIR variable
         """
+        self.verbose=verbose
         # We check for the existence of both the uncompressed and the compressed version of the
         # file
         self.DataStream = False
@@ -203,11 +427,10 @@ class grid():
             self.NewGrid = True
         else:
             self.NewGrid = False
-
-        FindFileResult = _FindFile(Name)
-        self.Name = FindFileResult['Name']
-        self.Compressed = FindFileResult['Compressed']
-        self.DataStream = FindFileResult['Datastream']
+            FindFileResult = _FindFile(Name)
+            self.Name = FindFileResult['Name']
+            self.Compressed = FindFileResult['Compressed']
+            self.DataStream = FindFileResult['Datastream']
 
         self.TimeSeries = TimeSeries
         if self.NewGrid:
@@ -215,6 +438,7 @@ class grid():
         else:
             self.Layers = None
         self.Items = None
+        self.RawData = None
         self.Data = None
         self.Template = None
         self.TemplNet = None
@@ -235,35 +459,194 @@ class grid():
         self.URx = None
         self.URy = None
         self.NoData = None
+        self.MetaData = {'title': None,
+                         'geodomain': None,
+                         'subject': None,
+                         'version': None}
+        self.LayerHeaderLen = None
 
-    def Load(self, template=None):
+
+    def _LoadDBCells(self, inFile):
+        # Loads a network DBCells table into a Pandas DataFrame
+        cmd = Dir2Ghaas + '/bin/rgis2table -a DBCells '
+        proc = sp.Popen(cmd + inFile, stdout=sp.PIPE, shell=True)
+
+        data1 = StringIO(bytearray(proc.stdout.read()).decode("utf-8"))
+
+        return pd.read_csv(data1, sep='\t')
+
+    def _LoadParallel(self,which):
+        if which == 1:
+            return self._LoadData()
+        elif which == 2:
+            return self._LoadDBLayers()
+        elif which == 3:
+            return self._LoadGeo()
+        else:
+            raise Exception('Unknonw option in _LoadParallel: {}'.format(which))
+
+#    def _SortReturn(self, res):
+#        for i in range(0,3):
+#            ReturnType=res[i][len(res[i])-1]
+#            if ReturnType == 'Data':
+#                self.RawData=res[i][0]
+#                self.Type=res[i][1]
+#                self.NoData=res[i][2]
+#            elif ReturnType == 'Layers':
+#                self.Layers = res[i][0]
+#                self.Year = res[i][1]
+#            elif ReturnType == 'Geo':
+#                self.LLx = res[i][0]
+#                self.LLy = res[i][1]
+#            else:
+#                raise Exception('Unknonw return option in _SortReturn: {}'.format(ReturnType))
+
+    def _SortReturn(self, data,layers,geo,items):
+        self.Data=data[0]
+        self.Type=data[1]
+        self.NoData=data[2]
+        self.Layers = layers[0]
+        self.Year = layers[1]
+        self.LLx = geo[0]
+        self.LLy = geo[1]
+        self.MetaData = geo[3]
+        self.Items = items[0]
+
+    def Load(self, template=None, MultiThread=False):
+        if MultiThread:
+            print("Error: MultiThread option currently not supposrteded")
+            exit(1)
         if not self.DataStream:  # If NOT a DataStream then expect GDBC and load DBLayers table
-            self.Layers, self.Year = _LoadDBLayers(self.Name, self.TimeSeries)
+            #runInParallel(self._LoadData,self._LoadDBLayers)
+
+            #p=Pool(nodes=3)
+            if MultiThread:
+                # MultiThread not working yet....
+                if self.verbose:
+                    print("MultiThread option select")
+                ncpu = int(psutil.cpu_count() *.75)
+                ray.init(num_cpus=ncpu,# include_webui=False,
+                         ignore_reinit_error=True,
+                         memory=60000 * 1024 * 1024,
+                         object_store_memory=20000 * 1024 * 1024,
+                         driver_object_store_memory=10000 * 1024 * 1024)
+
+                name_id=ray.put(self.Name)
+                timeseries_id=ray.put(self.TimeSeries)
+                compressed_id=ray.put(self.Compressed)
+                template_id=ray.put(self.Template)
+                verbose=ray.put(self.verbose)
+
+                load_out = [_LoadDBLayers_m.remote(name_id,timeseries_id,verbose),
+                            _LoadGeo_m.remote(name_id,compressed_id,verbose),
+                            _LoadDBItems_m.remote(name_id,verbose),
+                            _LoadData_m.remote(name_id,template_id,verbose)]
+
+                loadlayers, loadgeo,loaditems,loaddata = ray.get(load_out)
+
+                self.Layers = loadlayers[0]
+                self.Year = loadlayers[1]
+                self.LLx = loadgeo[0]
+                self.LLy = loadgeo[1]
+                self.MetaData = loadgeo[2]
+                self.Items = loaditems[0]
+                self.Data = loaddata[0].copy()
+                self.Type = loaddata[1]
+                self.NoData = loaddata[2]
+                self.npType = loaddata[3]
+
+                ray.shutdown()
+                if self.verbose:
+                    print("Finished MultiThread data reading")
+
+
+                #p=mp.Pool(processes=3)
+                #res=p.map(self._LoadParallel,[1,2,3])
+
+                #print(len(res[0]))
+
+                #manager = mp.Manager()
+                #self.return_dict = manager.dict()
+
+                #q1 = mp.Queue()
+                #q2 = mp.Queue()
+                #q3 = mp.Queue()
+                #q4 = mp.Queue()
+
+                #p1 = mp.Process(target=self._LoadData,args=(q1,))
+                #p2 = mp.Process(target=self._LoadDBLayers,args=(q2,))
+                #p3 = mp.Process(target=self._LoadGeo,args=(q3,))
+                #p4 = mp.Process(target=self._LoadDBItems,args=(q4,))
+
+                #p1.start()
+                #p2.start()
+                #p3.start()
+                #p4.start()
+
+                #p1.join()
+                #p2.join()
+                #p3.join()
+                #p4.join()
+
+                #print("Starting sort")
+                #self._SortReturn(q1.get_nowait(),q2.get_nowait(),q3.get_nowait(),q4.get_nowait())
+                #print("Ended sort")
+
+                """
+                p1 = threading.Thread(target=self._LoadData)
+                p2 = threading.Thread(target=self._LoadDBLayers)
+                p3 = threading.Thread(target=self._LoadGeo)
+                p1.start()
+                p2.start()
+                p3.start()
+                #out1 = q1.get()
+                #out2 = q2.get()
+                p1.join()
+                p2.join()
+                p3.join()
+                """
+            else:
+                if self.verbose:
+                    print("SingleThread option select")
+
+                self.Layers, self.Year,dummy=_LoadDBLayers(self.Name,self.TimeSeries,verbose=self.verbose)
+                self.Data, self.Type, self.NoData, self.npType, dummy=_LoadData(self.Name,self.Template,verbose=self.verbose)
+                self.LLx,self.LLy,self.MetaData,dummy=_LoadGeo(self.Name,self.Compressed,verbose=self.verbose)
+                self.Items,dummy=_LoadDBItems(self.Name,verbose=self.verbose)
+
+                if self.verbose:
+                    print("Finished SingleThread data reading")
+
+            self.Data.setflags(write=1)
+
             self.nLayers = int(len(self.Layers.index))
-            self.nByte = int(self.Layers.ix[0]['ValueSize'])
-            self.nRows = int(self.Layers.ix[0]['RowNum'])
-            self.nCols = int(self.Layers.ix[0]['ColNum'])
-            self.ResX = float(self.Layers.ix[0]['CellWidth'])
-            self.ResY = float(self.Layers.ix[0]['CellHeight'])
-            self.nType = int(self.Layers.ix[0]['ValueType'])
-            self.npType = self._npType(self.nType)
-            self.Items = _LoadDBItems(self.Name)
-            self._LoadData(int(self.nRows * self.nCols * self.nByte))
-            self._LoadGeo()
+            firstLayer=self.Layers.iloc[0,:]
+            self.nByte = int(firstLayer['ValueSize'])
+            self.nRows = int(firstLayer['RowNum'])
+            self.nCols = int(firstLayer['ColNum'])
+            self.ResX = float(firstLayer['CellWidth'])
+            self.ResY = float(firstLayer['CellHeight'])
+            self.nType = int(firstLayer['ValueType'])
+            #self.npType = self._npType(self.Type)
+            #self.Items = _LoadDBItems(self.Name)
+            self._ReshapeData()
+            self._AdjustGeo()
         elif not template == None:  # If DataStream and Template not None
             Result = self.FindFile(template)
             self.Template = Result['Name']
             self.TemplNet = Result['Network']
             if self.TemplNet:  # We have a network as template need to load the mapping
-                self.Cells = _LoadDBCells(self.Template)
-            self.Layers, self.Year = _LoadDBLayers(self.Template, self.TimeSeries)
+                self.Cells = self._LoadDBCells(self.Template)
+                # self.Cells = _LoadDBCells(self.Template)
+            self._LoadDBLayers()
             self.nLayers = int(len(self.Layers.index))
-            self.nByte = int(self.Layers.ix[0]['ValueSize'])
-            self.nRows = int(self.Layers.ix[0]['RowNum'])
-            self.nCols = int(self.Layers.ix[0]['ColNum'])
-            self.ResX = float(self.Layers.ix[0]['CellWidth'])
-            self.ResY = float(self.Layers.ix[0]['CellHeight'])
-            self.nType = int(self.Layers.ix[0]['ValueType'])
+            firstLayer=self.Layers.iloc[0,:]
+            self.nByte = int(firstLayer['ValueSize'])
+            self.nRows = int(firstLayer['RowNum'])
+            self.nCols = int(firstLayer['ColNum'])
+            self.ResX = float(firstLayer['CellWidth'])
+            self.ResY = float(firstLayer['CellHeight'])
+            self.nType = int(firstLayer['ValueType'])
             self.npType = self._npType(self.nType)
             self._Load_ds()
         elif (self.nLayers is not None and
@@ -278,7 +661,9 @@ class grid():
         else:
             raise Exception('Not enough parametes defined to load DS file')
 
+
     def _npType(self, nType):
+        # nType values: 2=int,3=float
         if nType == 2:
             if self.nByte == 2:
                 return np.int16
@@ -291,6 +676,7 @@ class grid():
                 return np.float64
         else:
             raise Exception('Unknown value format: type {}, size {}'.format(nType, self.nByte))
+
 
     def SetType(self, nType):
         # print(nType)
@@ -334,49 +720,33 @@ class grid():
         for i in range(0, self.nLayers):
             self.Data[i, :, :] = np.flipud(self.Data[i, :, :])
 
-    def _LoadData(self, perLayer, template=''):
+    def _ReshapeData(self):
 
-        if template == '':
-            cmd = Dir2Ghaas + '/bin/rgis2ds '
-        else:
-            cmd = Dir2Ghaas + '/bin/rgis2ds -m ' + template
-        dataparts = []
-        proc = sp.Popen(cmd + self.Name, stdout=sp.PIPE, shell=True)
+        if self.verbose:
+            print('Started _ReshapeData')
+            start_time = time.time()
 
-        for i in range(0, self.nLayers):
-            dump40 = MFdsHeader()
-            proc.stdout.readinto(dump40)
-            self.Type = dump40.Type
-            dataparts.append(bytearray(proc.stdout.read(perLayer)))
-        data = b"".join(dataparts)
+        #headLen=int(40/self.Type)
+        headLen=int((len(self.Data)/self.nLayers) - (self.nRows * self.nCols))
 
-        if dump40.Type > 6:
-            self.NoData = dump40.Missing.Float
-        else:
-            self.NoData = dump40.Missing.Int
+        self.LayerHeaderLen = headLen
 
-        self.Data = np.frombuffer(data, dtype=self.npType)
-        self.Data.setflags(write=1)
-
-        if dump40.Type > 6:
+        if self.Type > 6:
             self.Data[self.Data == self.NoData] = np.nan
         else:
             self.Data[self.Data == self.NoData] = 0
-        self.Data.shape = (self.nLayers, self.nRows, self.nCols)
+
+        self.Data.shape = (self.nLayers, headLen + self.nRows * self.nCols)
+        self.Data=self.Data[:,headLen:].reshape(self.nLayers, self.nRows, self.nCols)
+
+        #self.Data.shape = (self.nLayers, self.nRows, self.nCols)
         for i in range(0, self.nLayers):
             self.Data[i, :, :] = np.flipud(self.Data[i, :, :])
 
-    def _LoadGeo(self):
-        if self.Compressed:
-            with gzip.open(self.Name, "rb") as ifile:
-                ifile.seek(40)
-                self.LLx = struct.unpack('d', ifile.read(8))[0]
-                self.LLy = struct.unpack('d', ifile.read(8))[0]
-        else:
-            with open(self.Name, "rb") as ifile:
-                ifile.seek(40)
-                self.LLx = struct.unpack('d', ifile.read(8))[0]
-                self.LLy = struct.unpack('d', ifile.read(8))[0]
+        if self.verbose:
+            print('Finished _ReshapeData in {} minutes'.format((time.time() - start_time) / 60))
+
+    def _AdjustGeo(self):
         self.URx = self.LLx + (self.nCols * self.ResY)
         self.URy = self.LLy + (self.nRows * self.ResY)
         if ((self.LLx >= -180.0) and (self.URx <= 180.0) and (self.LLy >= -90.) and (self.URy <= 90.)):
@@ -385,8 +755,15 @@ class grid():
             self.Projection = "Cartesian"
 
     def Save(self, OutFile, Template):
-        cmd = Dir2Ghaas + '/bin/ds2rgis ' + '-m ' + Template + ' -t pippo '
-        print(cmd)
+        cmd = Dir2Ghaas + '/bin/ds2rgis ' + \
+        '-m ' + Template + \
+        ' -t {} '.format(self.MetaData['title']) + \
+        ' -d {} '.format(self.MetaData['geodomain']) + \
+        ' -u {} '.format(self.MetaData['subject']) + \
+        ' -v {} '.format(self.MetaData['version'])
+
+        if self.verbose:
+            print(cmd)
         with open(OutFile, "wb") as ifile:
             p = sp.Popen(cmd, stdout=ifile, stdin=sp.PIPE, stderr=sp.STDOUT, shell=True)
             for i in range(0, self.nLayers):
@@ -401,15 +778,23 @@ class grid():
                 if self.TimeSeries:
                     h.Date = pd.to_datetime(str(self.Layers.index[i]))
                 else:
-                    h.Date = self.Layers.Name[i]
+                    h.Date = self.Layers.Name[i].encode()
                 MakeGDBC = p.communicate(input=bytearray(h) + bytearray(np.flipud(self.Data[i, :, :])))[0]
 
-    def SaveAs(self, OutFile, Template, Title, Date=False, step='', Y=0, M=0, D=0, R=0, I=0):
+    def SaveAs(self, OutFile, Template, Title="", Date=False, step='', Y=0, M=0, D=0, R=0, I=0):
         if OutFile[len(OutFile) - 3:len(OutFile)] == '.gz':
             Compress = True
         else:
             Compress = False
-        cmd = [Dir2Ghaas + '/bin/ds2rgis', '-m', Template, '-t', Title]  # - ' + OutFile
+        if Title == "":
+            Title = self.MetaData['title']
+        cmd = [Dir2Ghaas + '/bin/ds2rgis',
+               '-m', Template,
+               '-t', Title,
+               '-d',self.MetaData['geodomain'],
+               '-u',self.MetaData['subject'],
+               '-v',self.MetaData['version']
+               ]  # - ' + OutFile
 
         OutData = bytearray()
         for i in range(0, self.nLayers):
@@ -428,9 +813,12 @@ class grid():
                     # the Date option on
                     Date = True
                     # And we need to convert Pandas date information
-                    # to rgis step...
+                    # to rgis_package step...
             else:
-                h.Date = self.Layers.Name[i].encode()
+                if type(self.Layers.Name[0]) == 'str':
+                    h.Date = self.Layers.Name[i].encode()
+                else:
+                    h.Date = str(self.Layers.Name[i]).encode()
             bHeader = bytearray(h)
             flipped = np.flipud(self.Data[i, :, :]).flatten()
             mask = np.isnan(flipped)
@@ -506,13 +894,16 @@ class grid():
                 self.Type = 7
             else:
                 self.Type = 6
-        print(AsType, self.nByte, self.Type)
+        if self.verbose:
+            print(AsType, self.nByte, self.Type)
         tmp = np.empty(self.Data.shape)
         tmp = self.Data.astype(AsType)
-        print(self.Data.dtype)
-        print(tmp.dtype)
+        if self.verbose:
+            print(self.Data.dtype)
+            print(tmp.dtype)
         self.Data = tmp
-        print(self.Data)
+        if self.verbose:
+            print(self.Data)
 
     def AddLayer(self, Name, Num=1, Frequency=None):
         # Depending on the value of Num (e.g. the number of layers to add)
@@ -539,12 +930,13 @@ class grid():
             ind = [MaxIndex + x + 1 for x in range(0, Num)]
             TableItems = 8
         addLayers = pd.DataFrame([[np.nan] * TableItems] * Num, columns=self.Layers.columns, index=ind)
-        addLayers['ValueSize'] = int(self.Layers.ix[0]['ValueSize'])
-        addLayers['RowNum'] = int(self.Layers.ix[0]['RowNum'])
-        addLayers['ColNum'] = int(self.Layers.ix[0]['ColNum'])
-        addLayers['CellWidth'] = float(self.Layers.ix[0]['CellWidth'])
-        addLayers['CellHeight'] = float(self.Layers.ix[0]['CellHeight'])
-        addLayers['ValueType'] = int(self.Layers.ix[0]['ValueType'])
+        firstLayer = self.Layers.iloc[0, :]
+        addLayers['ValueSize'] = int(firstLayer['ValueSize'])
+        addLayers['RowNum'] = int(firstLayer['RowNum'])
+        addLayers['ColNum'] = int(firstLayer['ColNum'])
+        addLayers['CellWidth'] = float(firstLayer['CellWidth'])
+        addLayers['CellHeight'] = float(firstLayer['CellHeight'])
+        addLayers['ValueType'] = int(firstLayer['ValueType'])
         if not self.TimeSeries:
             addLayers['ID'] = addLayers.index
             NameI = 0
@@ -560,8 +952,8 @@ class grid():
         self.Layers = self.Layers.append(addLayers)
         if self.TimeSeries:
             self.Layers.index = pd.DatetimeIndex(self.Layers.index.values, freq=Frequency)
-
-        tmp = np.full(int(self.Layers.ix[0]['RowNum']) * int(self.Layers.ix[0]['ColNum']) * Num, np.nan)
+        firstLayer=self.Layers.iloc[0,:]
+        tmp = np.full(int(firstLayer['RowNum']) * int(firstLayer['ColNum']) * Num, np.nan)
         self.Data = np.concatenate((self.Data.flatten(), tmp))
         self.Data.shape = (self.nLayers + Num, self.nRows, self.nCols)
         self.nLayers += Num
@@ -571,16 +963,26 @@ class grid():
         return deepcopy(self)
 
     def Xarray(self):
-        xcoords = [self.LLx + self.ResX * n for n in range(0, self.nCols)]
-        ycoords = [self.LLy + self.ResY * n for n in range(0, self.nRows)]
+        inX = self.LLx + self.ResX / 2.
+        inY = self.LLy + self.ResY / 2.
+        xcoords = [inX + self.ResX * n for n in range(0, self.nCols)]
+        ycoords = [inY + self.ResY * n for n in range(0, self.nRows)]
         ycoords.reverse()
         if self.TimeSeries:
-            out_xr = xr.DataArray(self.Data,
-                                  coords=[('time', self.Layers.index), ('latitude', ycoords), ('longitude', xcoords)])
+            out_xr = xr.DataArray(self.Data, dims=['time','latitude','longitude'],
+                                  coords={'time':self.Layers.index, 'latitude':ycoords, 'longitude':xcoords})
+                                  #coords=[('time', self.Layers.index), ('latitude', ycoords), ('longitude', xcoords)])
         else:
-            out_xr = xr.DataArray(self.Data, coords=[
-                ('time', pd.DatetimeIndex(self.Layers['Name'], freq=pd.infer_freq(self.Layers['Name']))),
-                ('latitude', ycoords), ('longitude', xcoords)])
+            # out_xr = xr.DataArray(self.Data, coords=[
+            #    ('time', pd.DatetimeIndex(self.Layers['Name'], freq=pd.infer_freq(self.Layers['Name']))),
+            #    ('latitude', ycoords), ('longitude', xcoords)])
+            out_xr = xr.DataArray(self.Data, dims=['time', 'latitude', 'longitude'],
+                                  coords = {'time': self.Layers['Name'].values,
+                                  'latitude': ycoords, 'longitude': xcoords})
+        if "subject" in self.MetaData.keys():
+            out_xr.name=self.MetaData["subject"].lower()
+        out_xr.attrs=self.MetaData
+        out_xr.attrs["actual_range"]=[np.nanmin(self.Data),np.nanmax(self.Data)]
         return out_xr
 
 
