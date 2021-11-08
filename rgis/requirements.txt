@@ -1,0 +1,6 @@
+ray~=0.7.4
+numpy~=1.14.0
+pandas~=0.22.0
+xarray~=0.10.3
+psutil~=5.5.0
+setuptools~=38.4.0

@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+setup.py
+rgis/__init__.py
+rgis.egg-info/PKG-INFO
+rgis.egg-info/SOURCES.txt
+rgis.egg-info/dependency_links.txt
+rgis.egg-info/not-zip-safe
+rgis.egg-info/requires.txt
+rgis.egg-info/top_level.txt
