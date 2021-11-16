@@ -3,7 +3,7 @@ from setuptools import setup
 setup(name='rgis',
       version='0.1',
       description='RGIS python wrapper',
-      url='https://github.com/fabio1299/RGISpy',
+      url='https://github.com/fabio1299/rgis_wrapper.git',
       author='Fabio Corsi',
       author_email='fcorsi@ccny.cuny.edu',
       license='MIT',
