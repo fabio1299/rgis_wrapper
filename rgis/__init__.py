@@ -1,5 +1,5 @@
 """
-Handles the inteface between Python and the rgis_package framework
+Handles the interface between Python and the rgis_package framework
 The goal is to expose the directory structure of the rgis_package
 framework to Python to allow easy access to the RGISarchives
 and the results of the WBM model runs
