@@ -22,5 +22,5 @@ The easiest way to get going is with conda to circumvent any gdal dependency iss
 
 conda create -n rgis python=3.10 gdal
 
-pip install git+https://github.com/fabio/rgis_wrapper.git
+pip install git+https://github.com/fabio1299/rgis_wrapper.git
 ```
