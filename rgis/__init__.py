@@ -131,6 +131,14 @@ def _npType(nType):
 
 ####################################################
 # Shared functions
+def _DefMeta(key):
+    defaults={'title': 'from rgis python wrapper',
+              'subject': 'unspecified',
+              'geodomain': 'unspecified',
+              'version' : 'unspecified'}
+    if key not in defaults.keys():
+        raise Exception('Unknown default WBM metadata entry: {}'.format(key))
+    return defaults(key)
 def _FindFile(Name):
     # Checkes if the River GIS grid file exists and if it is
     # compressed or a data stream file
@@ -174,9 +182,12 @@ def _ReadDBLayers(inFile, TimeSeriesFlag):
                                     'ValueSize': 'int',
                                     'CellWidth': 'float',
                                     'CellHeight': 'float'})
-        Layers.index = pd.DatetimeIndex(Layers.index.values, freq=pd.infer_freq(Layers.index))
+        TS = pd.infer_freq(Layers.index)
+        Layers.index = pd.DatetimeIndex(Layers.index.values, freq=TS)
         ts = pd.to_datetime(str(Layers.index.values[0]))
         Year = ts.strftime('%Y')
+        Month = ts.strftime('%m')
+        Day = ts.strftime('%d')
     else:
         Layers = pd.read_csv(data1, sep='\t',
                              dtype={'ID': 'int',
@@ -187,9 +198,12 @@ def _ReadDBLayers(inFile, TimeSeriesFlag):
                                     'CellWidth': 'float',
                                     'CellHeight': 'float'})
         Year = None
+        Month = None
+        Day = None
+        TS = None
     Layers['ID'] = Layers['ID'] - 1
 
-    return Layers, Year
+    return Layers, Year, Month, Day, TS
 
 
 ####################################################
@@ -264,9 +278,9 @@ def _LoadData_m(name,template,verbose=False):
     return [data, type, nodata, nptype]
 #@ray.remote
 def _LoadDBLayers_m(name,timeseries,verbose=False):
-    layers, year,dummy = _LoadDBLayers(name,timeseries,verbose=verbose)
+    layers, year, startmonth, startday, timestep, dummy = _LoadDBLayers(name,timeseries,verbose=verbose)
     #ray.put(layers, year)
-    return [layers, year]
+    return [layers, year, startmonth, startday, timestep]
 #@ray.remote
 def _LoadGeo_m(name,compressed,verbose=False):
     llx,lly,metadata,dummy= _LoadGeo(name,compressed,verbose=verbose)
@@ -283,7 +297,7 @@ def _LoadDBLayers(name,timeseries,verbose=False): #, q): #,pippo,return_dict):
         print('Started _LoadDBLayers')
         start_time = time.time()
     #return_dict['Layers'], return_dict['Year'] = _ReadDBLayers(self.Name, self.TimeSeries)
-    Layers, Year = _ReadDBLayers(name, timeseries)
+    Layers, Year, Month, Day, TS = _ReadDBLayers(name, timeseries)
     #self.Layers, self.Year = _ReadDBLayers(self.Name, self.TimeSeries)
 
     #if q is not None:
@@ -292,7 +306,7 @@ def _LoadDBLayers(name,timeseries,verbose=False): #, q): #,pippo,return_dict):
 
     if verbose:
         print('Finished _LoadDBLayers in {} minutes'.format((time.time() - start_time) / 60))
-    return Layers, Year,'Layers'
+    return Layers, Year, Month, Day, TS,'Layers'
 
 def _LoadDBItems(name,verbose=False): #, q): #,pippo,return_dict):
     if verbose:
@@ -444,6 +458,9 @@ class grid():
         self.TemplNet = None
         self.Cells = None
         self.Year = None
+        self.StartMonth = None
+        self.StartDay = None
+        self.TimeStep = None
         self.nLayers = None
         self.nRows = None
         self.nCols = None
@@ -546,6 +563,9 @@ class grid():
 
                 self.Layers = loadlayers[0]
                 self.Year = loadlayers[1]
+                self.StartMonth = loadlayers[2]
+                self.StartDay = loadlayers[3]
+                self.TimeStep = loadlayers[4]
                 self.LLx = loadgeo[0]
                 self.LLy = loadgeo[1]
                 self.MetaData = loadgeo[2]
@@ -609,9 +629,12 @@ class grid():
                 if self.verbose:
                     print("SingleThread option select")
 
-                self.Layers, self.Year,dummy=_LoadDBLayers(self.Name,self.TimeSeries,verbose=self.verbose)
+                self.Layers, self.Year, self.StartMonth, self.StartDay, self.TimeStep,dummy=_LoadDBLayers(self.Name,self.TimeSeries,verbose=self.verbose)
                 self.Data, self.Type, self.NoData, self.npType, dummy=_LoadData(self.Name,self.Template,verbose=self.verbose)
                 self.LLx,self.LLy,self.MetaData,dummy=_LoadGeo(self.Name,self.Compressed,verbose=self.verbose)
+                for key in ['title','subject','geodomain','version']:
+                    if key not in self.MetaData.keys():
+                        self.MetaData[key]=_DefMeta(key)
                 self.Items,dummy=_LoadDBItems(self.Name,verbose=self.verbose)
 
                 if self.verbose:
@@ -795,7 +818,6 @@ class grid():
                '-u',self.MetaData['subject'],
                '-v',self.MetaData['version']
                ]  # - ' + OutFile
-
         OutData = bytearray()
         for i in range(0, self.nLayers):
             h = MFdsHeader()
@@ -808,9 +830,16 @@ class grid():
                 h.Missing.Int = int(self.NoData)
             if self.TimeSeries:
                 h.Date = self.Layers.index[i].strftime("%Y-%m-%d").encode()
+                if Y==0:
+                    Y=int(self.Year)
+                if M==0:
+                    M=int(self.StartMonth)
+                if D==0:
+                    D=int(self.StartDay)
                 if step == '':
                     # If it is a time series, then we need to always save with
                     # the Date option on
+                    step=self.TimeStep
                     Date = True
                     # And we need to convert Pandas date information
                     # to rgis_package step...
@@ -829,7 +858,7 @@ class grid():
             FinalFile = OutFile
             OutFile = '/tmp/tmp' + str(random.randint(10000, 99999)) + '.gdbc'
         with open(OutFile, "wb") as ifile:
-            p = sp.Popen(cmd, stdout=ifile, stdin=sp.PIPE, stderr=sp.STDOUT, bufsize=1)  # 2000000)
+            p = sp.Popen(cmd, stdout=ifile, stdin=sp.PIPE, stderr=sp.STDOUT, bufsize=0)  # 2000000)
             p.communicate(input=OutData)[0]
             p.terminate()
         if Date:
@@ -848,32 +877,32 @@ class grid():
                 os.remove(OutFile)
         return
 
-    def DateLayer(self, InFile, OutFile, step, Y=0, M=0, D=0, R=0, I=0):
+    def DateLayer(self, InFile, OutFile, step, Y=0, M=0, D=0, H=0, I=0):
         cmd = Dir2Ghaas + '/bin/grdDateLayers '
         if step.lower() == 'minute':
-            cmd = cmd + ' -y ' + str(Y)
-            cmd = cmd + ' -m ' + str(M)
-            cmd = cmd + ' -d ' + str(D)
-            cmd = cmd + ' -r ' + str(R)
-            cmd = cmd + ' -i ' + str(I)
+            cmd = cmd + ' -Y ' + str(Y)
+            cmd = cmd + ' -M ' + str(M)
+            cmd = cmd + ' -D ' + str(D)
+            cmd = cmd + ' -H ' + str(H)
+            cmd = cmd + ' -I ' + str(I)
             cmd = cmd + ' -e minute '
         elif step.lower() == 'hour':
-            cmd = cmd + ' -y ' + str(Y)
-            cmd = cmd + ' -m ' + str(M)
-            cmd = cmd + ' -d ' + str(D)
-            cmd = cmd + ' -r ' + str(R)
+            cmd = cmd + ' -Y ' + str(Y)
+            cmd = cmd + ' -M ' + str(M)
+            cmd = cmd + ' -D ' + str(D)
+            cmd = cmd + ' -H ' + str(H)
             cmd = cmd + ' -e hour '
-        elif step.lower() == 'day':
-            cmd = cmd + ' -y ' + str(Y)
-            cmd = cmd + ' -m ' + str(M)
-            cmd = cmd + ' -d ' + str(D)
+        elif step.lower() == 'day' or step.lower() == 'd':
+            cmd = cmd + ' -Y ' + str(Y)
+            cmd = cmd + ' -M ' + str(M)
+            cmd = cmd + ' -D ' + str(D)
             cmd = cmd + ' -e day '
-        elif step.lower() == 'month':
-            cmd = cmd + ' -y ' + str(Y)
-            cmd = cmd + ' -m ' + str(M)
+        elif step.lower() == 'month' or step.lower() == 'ms':
+            cmd = cmd + ' -Y ' + str(Y)
+            cmd = cmd + ' -M ' + str(M)
             cmd = cmd + ' -e month '
-        elif step.lower() == 'year':
-            cmd = cmd + ' -y ' + str(Y)
+        elif step.lower() == 'year'  or step.lower() == 'y':
+            cmd = cmd + ' -Y ' + str(Y)
             cmd = cmd + ' -e year '
         else:
             raise Exception('Unknown option in grdDateLayers: {}'.format(step))
